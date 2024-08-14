@@ -30,7 +30,7 @@ ARGO_AUTH=eyJhIjoiMWIyNjA3MDAxNTgxMTg2NGI1ZTQxOWM4ZTcwY2MzZWQiLCJ0IjoiOGE2M2RkMT
 
 install_singbox() {
   cd $WORKDIR
-  pkill -kill -u 	Shaa
+  pkill -kill -u fangg
   argo_configure 
   generate_config
   download_singbox && wait
