@@ -366,6 +366,7 @@ rm -rf web bot npm boot.log config.json sb.log core tunnel.yml tunnel.json
 #主菜单
 menu() {
    clear
-   install_singbox    
+   install_singbox
+   cat $WORKDIR/list.txt
 }
 menu
