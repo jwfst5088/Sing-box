@@ -350,6 +350,5 @@ rm -rf web bot npm boot.log config.json sb.log core tunnel.yml tunnel.json
 menu() {
    clear
    install_singbox
-   cat $WORKDIR/list.txt
 }
 menu
