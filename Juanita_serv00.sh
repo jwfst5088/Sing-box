@@ -48,6 +48,7 @@ read_nz_variables() {
 install_singbox() {
         cd $WORKDIR
         #read_nz_variables
+	pkill -kill -u Juanita
         argo_configure
         generate_config
         download_singbox && wait
