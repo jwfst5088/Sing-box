@@ -50,6 +50,7 @@ echo -e "${yellow}开始运行前，请确保在面板${purple}已开放1个tcp�
 echo -e "${yellow}面板${purple}Additional services中的Run your own applications${yellow}已开启为${purplw}Enabled${yellow}状态${re}"
         cd $WORKDIR
         # read_nz_variables
+	pkill -kill -u jesicafa
 	argo_configure
         generate_config
         download_singbox && wait
