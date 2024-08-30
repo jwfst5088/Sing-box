@@ -19,6 +19,9 @@ server_name="sing-box"
 work_dir="/etc/sing-box"
 config_dir="${work_dir}/config.json"
 client_dir="${work_dir}/url.txt"
+export vless_port=${PORT:-$(shuf -i 1000-65000 -n 1)}
+export CFIP=${CFIP:-'www.visa.com.tw'} 
+export CFPORT=${CFPORT:-'443'} 
 
 # 检查是否为root下运行
 [[ $EUID -ne 0 ]] && red "请在root用户下运行脚本" && exit 1
@@ -55,7 +58,7 @@ fi
 check_nginx() {
 if command -v nginx &>/dev/null; then
     if [ -f /etc/alpine-release ]; then
-        rc-service nginx status | grep -q "started" && green "running" && return 0 || yellow "not running" && return 1
+        rc-service nginx status | grep -q "stoped" && yellow "not running" && return 1 || green "running" && return 0
     else 
         [ "$(systemctl is-active nginx)" = "active" ] && green "running" && return 0 || yellow "not running" && return 1
     fi
@@ -165,7 +168,6 @@ install_singbox() {
     chown root:root ${work_dir} && chmod +x ${work_dir}/${server_name} ${work_dir}/argo ${work_dir}/qrencode
 
    # 生成随机端口和密码
-    vless_port=$(shuf -i 1000-65535 -n 1) 
     nginx_port=$(($vless_port + 1)) 
     tuic_port=$(($vless_port + 2))
     hy2_port=$(($vless_port + 3)) 
@@ -175,14 +177,14 @@ install_singbox() {
     private_key=$(echo "${output}" | awk '/PrivateKey:/ {print $2}')
     public_key=$(echo "${output}" | awk '/PublicKey:/ {print $2}')
 
-    iptables -A INPUT -p tcp --dport 8001 -j ACCEPT 
-    iptables -A INPUT -p tcp --dport $vless_port -j ACCEPT 
-    iptables -A INPUT -p tcp --dport $nginx_port -j ACCEPT 
-    iptables -A INPUT -p udp --dport $tuic_port -j ACCEPT 
-    iptables -A INPUT -p udp --dport $hy2_port -j ACCEPT
-    iptables -P FORWARD ACCEPT 
-    iptables -P OUTPUT ACCEPT
-    iptables -F
+    iptables -A INPUT -p tcp --dport 8001 -j ACCEPT > /dev/null 2>&1 
+    iptables -A INPUT -p tcp --dport $vless_port -j ACCEPT > /dev/null 2>&1 
+    iptables -A INPUT -p tcp --dport $nginx_port -j ACCEPT > /dev/null 2>&1 
+    iptables -A INPUT -p udp --dport $tuic_port -j ACCEPT > /dev/null 2>&1 
+    iptables -A INPUT -p udp --dport $hy2_port -j ACCEPT > /dev/null 2>&1
+    iptables -P FORWARD ACCEPT > /dev/null 2>&1 
+    iptables -P OUTPUT ACCEPT > /dev/null 2>&1
+    iptables -F > /dev/null 2>&1
     manage_packages uninstall ufw firewalld iptables-persistent iptables-services > /dev/null 2>&1
 
     # 生成自签名证书
@@ -201,38 +203,10 @@ cat > "${config_dir}" << EOF
   "dns": {
     "servers": [
       {
-        "tag": "Google",
-        "address": "https://dns.google/dns-query",
-        "address_resolver": "local"
-      },
-      {
-        "tag": "local",
-        "address": "local"
+        "tag": "google",
+        "address": "tls://8.8.8.8"
       }
-    ],
-    "rules": [
-      {
-        "rule_set": [
-          "geosite-openai"
-        ],
-        "server": "wireguard"
-      },
-      {
-        "rule_set": [
-          "geosite-netflix"
-        ],
-        "server": "wireguard"
-      },
-      {
-        "rule_set": [
-          "geosite-category-ads-all"
-        ],
-        "server": "block"
-      }
-    ],
-    "final": "local",
-    "disable_cache": false,
-    "disable_expire": false
+    ]
   },
   "inbounds": [
     {
@@ -248,11 +222,11 @@ cat > "${config_dir}" << EOF
         ],
         "tls": {
             "enabled": true,
-            "server_name": "www.zara.com",
+            "server_name": "www.iij.ad.jp",
             "reality": {
                 "enabled": true,
                 "handshake": {
-                    "server": "www.zara.com",
+                    "server": "www.iij.ad.jp",
                     "server_port": 443
                 },
                 "private_key": "$private_key",
@@ -283,6 +257,8 @@ cat > "${config_dir}" << EOF
     {
         "tag": "hysteria2",
         "type": "hysteria2",
+        "sniff":true,
+        "sniff_override_destination":true,
         "listen": "::",
         "listen_port": $hy2_port,
         "users": [
@@ -290,15 +266,19 @@ cat > "${config_dir}" << EOF
                 "password": "$uuid"
             }
         ],
+        "ignore_client_bandwidth":false,
         "masquerade": "https://bing.com",
         "tls": {
             "enabled": true,
             "alpn": [
                 "h3"
             ],
+            "min_version":"1.3",
+            "max_version":"1.3",
             "certificate_path": "$work_dir/cert.pem",
             "key_path": "$work_dir/private.key"
         }
+
     },
  
     {
@@ -308,7 +288,8 @@ cat > "${config_dir}" << EOF
         "listen_port": $tuic_port,
         "users": [
           {
-            "uuid": "$uuid"
+            "uuid": "$uuid",
+            "password": "$password"
           }
         ],
         "congestion_control": "bbr",
@@ -322,87 +303,141 @@ cat > "${config_dir}" << EOF
        }
     }
   ],
-    "outbounds": [
+  "outbounds": [
     {
       "type": "direct",
       "tag": "direct"
     },
     {
-      "type": "block",
-      "tag": "block"
+      "type": "direct",
+      "tag": "direct-ipv4-prefer-out",
+      "domain_strategy": "prefer_ipv4"
     },
     {
-      "type": "dns",
-      "tag": "dns-out"
+      "type": "direct",
+      "tag": "direct-ipv4-only-out",
+      "domain_strategy": "ipv4_only"
+    },
+    {
+      "type": "direct",
+      "tag": "direct-ipv6-prefer-out",
+      "domain_strategy": "prefer_ipv6"
+    },
+    {
+      "type": "direct",
+      "tag": "direct-ipv6-only-out",
+      "domain_strategy": "ipv6_only"
     },
     {
       "type": "wireguard",
       "tag": "wireguard-out",
-      "server": "162.159.195.100",
-      "server_port": 4500,
+      "server": "engage.cloudflareclient.com",
+      "server_port": 2408,
       "local_address": [
         "172.16.0.2/32",
-        "2606:4700:110:83c7:b31f:5858:b3a8:c6b1/128"
+        "2606:4700:110:812a:4929:7d2a:af62:351c/128"
       ],
-      "private_key": "mPZo+V9qlrMGCZ7+E6z2NI6NOV34PD++TpAR09PtCWI=",
+      "private_key": "gBthRjevHDGyV0KvYwYE52NIPy29sSrVr6rcQtYNcXA=",
       "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
       "reserved": [
-        26,
-        21,
-        228
+        6,
+        146,
+        6
       ]
+    },
+    {
+      "type": "direct",
+      "tag": "wireguard-ipv4-prefer-out",
+      "detour": "wireguard-out",
+      "domain_strategy": "prefer_ipv4"
+    },
+    {
+      "type": "direct",
+      "tag": "wireguard-ipv4-only-out",
+      "detour": "wireguard-out",
+      "domain_strategy": "ipv4_only"
+    },
+    {
+      "type": "direct",
+      "tag": "wireguard-ipv6-prefer-out",
+      "detour": "wireguard-out",
+      "domain_strategy": "prefer_ipv6"
+    },
+    {
+      "type": "direct",
+      "tag": "wireguard-ipv6-only-out",
+      "detour": "wireguard-out",
+      "domain_strategy": "ipv6_only"
     }
   ],
   "route": {
-    "rules": [
-      {
-        "protocol": "dns",
-        "outbound": "dns-out"
-      },
-      {
-        "ip_is_private": true,
-        "outbound": "direct"
-      },
-      {
-        "rule_set": [
-          "geosite-category-ads-all"
-        ],
-        "outbound": "block"
-      },
-      {
-        "rule_set": [
-          "geosite-openai"
-        ],
-        "outbound": "wireguard-out"
-      },
-      {
-        "rule_set": [
-          "geosite-netflix"
-        ],
-        "outbound": "wireguard-out"
-      }
-    ],
     "rule_set": [
       {
         "tag": "geosite-netflix",
         "type": "remote",
         "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs"
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs",
+        "update_interval": "1d"
       },
       {
         "tag": "geosite-openai",
         "type": "remote",
         "format": "binary",
-        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/openai.srs"
-      },      
-      {
-        "tag": "geosite-category-ads-all",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs"
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/openai.srs",
+        "update_interval": "1d"
       }
     ],
-    "auto_detect_interface": true,
+    "rules": [
+      {
+        "rule_set": [
+          "geosite-netflix"
+        ],
+        "outbound": "wireguard-ipv6-only-out"
+      },
+      {
+        "domain": [
+          "api.statsig.com",
+          "browser-intake-datadoghq.com",
+          "cdn.openai.com",
+          "chat.openai.com",
+          "auth.openai.com",
+          "chat.openai.com.cdn.cloudflare.net",
+          "ios.chat.openai.com",
+          "o33249.ingest.sentry.io",
+          "openai-api.arkoselabs.com",
+          "openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net",
+          "openaicomproductionae4b.blob.core.windows.net",
+          "production-openaicom-storage.azureedge.net",
+          "static.cloudflareinsights.com"
+        ],
+        "domain_suffix": [
+          ".algolia.net",
+          ".auth0.com",
+          ".chatgpt.com",
+          ".challenges.cloudflare.com",
+          ".client-api.arkoselabs.com",
+          ".events.statsigapi.net",
+          ".featuregates.org",
+          ".identrust.com",
+          ".intercom.io",
+          ".intercomcdn.com",
+          ".launchdarkly.com",
+          ".oaistatic.com",
+          ".oaiusercontent.com",
+          ".observeit.net",
+          ".openai.com",
+          ".openaiapi-site.azureedge.net",
+          ".openaicom.imgix.net",
+          ".segment.io",
+          ".sentry.io",
+          ".stripe.com"
+        ],
+        "domain_keyword": [
+          "openaicom-api"
+        ],
+        "outbound": "wireguard-ipv6-prefer-out"
+      }
+    ],
     "final": "direct"
    },
    "experimental": {
@@ -503,24 +538,34 @@ get_info() {
   clear
   server_ip=$(get_realip)
 
-  isp=$(curl -s https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18}' | sed -e 's/ /_/g')
+  isp=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18}' | sed -e 's/ /_/g' || echo "vps")
 
-  argodomain=$(grep -oE 'https://[[:alnum:]+\.-]+\.trycloudflare\.com' "${work_dir}/argo.log" | sed 's@https://@@')
+  if [ -f "${work_dir}/argo.log" ]; then
+      for i in {1..5}; do
+          argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "${work_dir}/argo.log")
+          [ -n "$argodomain" ] && break
+          sleep 2
+      done
+  else
+      restart_argo
+      sleep 6
+      argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "${work_dir}/argo.log")
+  fi
 
-  echo -e "${green}\nArgoDomain：${re}${purple}$argodomain${re}"
+  green "\nArgoDomain：${purple}$argodomain${re}\n"
 
   yellow "\n温馨提醒：如节点不通，请打开V2rayN里的 “跳过证书验证”，或将节点的跳过证书验证设置为“true”\n"
 
-  VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"www.visa.com.tw\", \"port\": \"443\", \"id\": \"${uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess?ed=2048\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"randomized\", \"allowlnsecure\": \"flase\"}"
+  VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"${CFIP}\", \"port\": \"${CFPORT}\", \"id\": \"${uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess?ed=2048\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"randomized\", \"allowlnsecure\": \"flase\"}"
 
   cat > ${work_dir}/url.txt <<EOF
-vless://${uuid}@${server_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.zara.com&fp=chrome&pbk=${public_key}&type=tcp&headerType=none#${isp}
+vless://${uuid}@${server_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.iij.ad.jp&fp=chrome&pbk=${public_key}&type=tcp&headerType=none#${isp}
 
 vmess://$(echo "$VMESS" | base64 -w0)
 
-hysteria2://${uuid}@${server_ip}:${hy2_port}/?sni=www.bing.com&alpn=h3&insecure=1#${isp}
+hysteria2://${uuid}@${server_ip}:${hy2_port}/?sni=www.bing.com&insecure=1&alpn=h3&obfs=none#${isp}
 
-tuic://${uuid}:@${server_ip}:${tuic_port}?sni=www.bing.com&alpn=h3&insecure=1&congestion_control=bbr#${isp}
+tuic://${uuid}:${password}@${server_ip}:${tuic_port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${isp}
 EOF
 echo ""
 while IFS= read -r line; do echo -e "${purple}$line"; done < ${work_dir}/url.txt
@@ -808,6 +853,7 @@ uninstall_singbox() {
            # 删除配置文件和日志
            rm -rf "${work_dir}" || true
            rm -f "${log_dir}" || true
+	   rm -rf /etc/systemd/system/sing-box.service /etc/systemd/system/argo.service > /dev/null 2>&1
            
            # 卸载Nginx
            reading "\n是否卸载 Nginx？${green}(卸载请输入 ${yellow}y${re} ${green}回车将跳过卸载Nginx) (y/n): ${re}" choice
@@ -862,7 +908,9 @@ if [ ${check_singbox} -eq 0 ]; then
     skyblue "------------"
     green "3. 修改Reality伪装域名"
     skyblue "------------"
-    purple "${purple}4. 返回主菜单"
+    green "4. 添加hysteria2端口跳跃"
+    skyblue "------------"
+    purple "${purple}5. 返回主菜单"
     skyblue "------------"
     reading "请输入选择: " choice
     case "${choice}" in
@@ -935,18 +983,20 @@ if [ ${check_singbox} -eq 0 ]; then
             ;;
         3)  
             clear
-            green "\n1. www.ups.com\n\n2. www.svix.com\n\n3. www.cboe.com\n\n4. www.hubspot.com\n"
+            green "\n1. www.joom.com\n\n2. www.stengg.com\n\n3. www.wedgehr.com\n\n4. www.cerebrium.ai\n\n5. www.nazhumi.com\n"
             reading "\n请输入新的Reality伪装域名(可自定义输入,回车留空将使用默认1): " new_sni
                 if [ -z "$new_sni" ]; then    
-                    new_sni="www.ups.com"
+                    new_sni="www.joom.com"
                 elif [[ "$new_sni" == "1" ]]; then
-                    new_sni="www.ups.com"
+                    new_sni="www.joom.com"
                 elif [[ "$new_sni" == "2" ]]; then
-                    new_sni="www.svix.com"
+                    new_sni="www.stengg.com"
                 elif [[ "$new_sni" == "3" ]]; then
-                    new_sni="www.cboe.com"
+                    new_sni="www.wedgehr.com"
                 elif [[ "$new_sni" == "4" ]]; then
-                    new_sni="www.hubspot.com"
+                    new_sni="www.cerebrium.ai"
+	        elif [[ "$new_sni" == "5" ]]; then
+                    new_sni="www.cerebrium.ai"
                 else
                     new_sni="$new_sni"
                 fi
@@ -961,7 +1011,31 @@ if [ ${check_singbox} -eq 0 ]; then
                 echo ""
                 green "\nReality sni已修改为：${purple}${new_sni}${re} ${green}请更新订阅或手动更改reality节点的sni域名${re}\n"
             ;; 
-        4)  menu ;;
+        4)  
+            purple "端口跳跃需确保跳跃区间的端口没有被占用，nat鸡请注意可用端口范围，否则可能造成节点不通\n"
+            reading "请输入起始端口 (回车跳过将使用随机端口): " min_port
+            [ -z "$min_port" ] && min_port=$(shuf -i 50000-65000 -n 1)
+            yellow "你的起始端口为：$min_port"
+            reading "\n请输入结束端口 (需大于起始端口): " max_port
+            [ -z "$max_port" ] && max_port=$(($min_port + 100)) 
+            yellow "你的结束端口为：$max_port\n"
+            manage_packages install iptables6 > /dev/null 2>&1
+            listen_port=$(sed -n '/"tag": "hysteria2"/,/}/s/.*"listen_port": \([0-9]*\).*/\1/p' $config_dir)
+            iptables -A FORWARD -p udp --dport $min_port:$max_port -j ACCEPT > /dev/null 2>&1
+            iptables -t nat -A PREROUTING -p udp --dport $min_port:$max_port -j REDIRECT --to-port $listen_port > /dev/null 2>&1
+            command -v ip6tables &> /dev/null && ip6tables -A FORWARD -p udp --dport $min_port:$max_port -j ACCEPT > /dev/null 2>&1 && ip6tables -t nat -A PREROUTING -p tcp --dport $min_port:$max_port -j REDIRECT --to-port $listen_port > /dev/null 2>&1
+            restart_singbox
+            ip=$(get_realip)
+            uuid=$(sed -n 's/.*hysteria2:\/\/\([^@]*\)@.*/\1/p' $client_dir)
+            line_number=$(grep -n 'hysteria2://' $client_dir | cut -d':' -f1)
+            isp=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18}' | sed -e 's/ /_/g' || echo "vps")
+            sed -i.bak "/hysteria2:/d" $client_dir
+            sed -i "${line_number}i hysteria2://$uuid@$ip:$listen_port?peer=www.bing.com&insecure=1&alpn=h3&obfs=none&mport=$listen_port,$min_port-$max_port#$isp" $client_dir
+            base64 -w0 $client_dir > /etc/sing-box/sub.txt
+            while IFS= read -r line; do yellow "$line"; done < ${work_dir}/url.txt
+            green "\nhysteria2端口跳跃已开启,跳跃端口为：${purple}$min_port-$max_port${re} ${green}请更新订阅或手动复制以上hysteria2节点${re}\n"
+            ;;
+        5)  menu ;;
         *)  read "无效的选项！" ;; 
     esac
 else
@@ -1104,19 +1178,28 @@ ingress:
   - service: http_status:404
 EOF
 
-                sed -i '/^ExecStart=/c ExecStart=/bin/sh -c "/etc/sing-box/argo tunnel --edge-ip-version auto --config /etc/sing-box/tunnel.yml run 2>&1"' /etc/systemd/system/argo.service
+                if [ -f /etc/alpine-release ]; then
+                    sed -i '/^command_args=/c\command_args="-c '\''/etc/sing-box/argo tunnel --edge-ip-version auto --config /etc/sing-box/tunnel.yml run 2>&1'\''"' /etc/init.d/argo
+                else
+                    sed -i '/^ExecStart=/c ExecStart=/bin/sh -c "/etc/sing-box/argo tunnel --edge-ip-version auto --config /etc/sing-box/tunnel.yml run 2>&1"' /etc/systemd/system/argo.service
+                fi
                 restart_argo
                 sleep 1 
                 change_argo_domain
 
             elif [[ $argo_auth =~ ^[A-Z0-9a-z=]{120,250}$ ]]; then
-                sed -i '/^ExecStart=/c ExecStart=/bin/sh -c "/etc/sing-box/argo tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token '$argo_auth' 2>&1"' /etc/systemd/system/argo.service
+                if [ -f /etc/alpine-release ]; then
+                    sed -i "/^command_args=/c\command_args=\"-c '/etc/sing-box/argo tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token $argo_auth 2>&1'\"" /etc/init.d/argo
+                else
+
+                    sed -i '/^ExecStart=/c ExecStart=/bin/sh -c "/etc/sing-box/argo tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token '$argo_auth' 2>&1"' /etc/systemd/system/argo.service
+                fi
                 restart_argo
                 sleep 1 
                 change_argo_domain
             else
                 yellow "你输入的argo域名或token不匹配，请重新输入"
-                manage_argo
+                manage_argo            
             fi
             ;; 
         5)
@@ -1132,7 +1215,7 @@ EOF
 
         6)  
             if [ -f /etc/alpine-release ]; then
-                if grep -q '--url http://localhost:8001' /etc/init.d/argo; then
+                if grep -Fq -- '--url http://localhost:8001' /etc/init.d/argo; then
                     get_quick_tunnel
                     change_argo_domain 
                 else
@@ -1161,9 +1244,19 @@ fi
 get_quick_tunnel() {
 restart_argo
 yellow "获取临时argo域名中，请稍等...\n"
-sleep 4
-get_argodomain=$(grep -oE 'https://[[:alnum:]+\.-]+\.trycloudflare\.com' "${work_dir}/argo.log" | sed 's@https://@@')
-green "ArgoDomain：${purple}$get_argodomain${re}"
+sleep 3
+if [ -f /etc/sing-box/argo.log ]; then
+  for i in {1..5}; do
+      get_argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' /etc/sing-box/argo.log)
+      [ -n "$get_argodomain" ] && break
+      sleep 2
+  done
+else
+  restart_argo
+  sleep 6
+  get_argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' /etc/sing-box/argo.log)
+fi
+green "ArgoDomain：${purple}$get_argodomain${re}\n"
 ArgoDomain=$get_argodomain
 }
 
@@ -1180,7 +1273,7 @@ new_vmess_url="$vmess_prefix$encoded_updated_vmess"
 new_content=$(echo "$content" | sed "s|$vmess_url|$new_vmess_url|")
 echo "$new_content" > "$client_dir"
 base64 -w0 ${work_dir}/url.txt > ${work_dir}/sub.txt
-green "\nvmess节点已更新,更新订阅或手动复制以下vmess-argo节点\n"
+green "vmess节点已更新,更新订阅或手动复制以下vmess-argo节点\n"
 purple "$new_vmess_url\n" 
 }
 
@@ -1188,10 +1281,10 @@ purple "$new_vmess_url\n"
 check_nodes() {
 if [ ${check_singbox} -eq 0 ]; then
     while IFS= read -r line; do purple "${purple}$line"; done < ${work_dir}/url.txt
-    echo ""
     server_ip=$(get_realip)
     lujing=$(grep -oP 'location /\K[^ ]+' "/etc/nginx/nginx.conf")
-    green "\n节点订阅链接：http://${server_ip}/${lujing}\n"
+    sub_port=$(sed -n 's/^\s*listen \([0-9]\+\);/\1/p' /etc/nginx/nginx.conf)
+    green "\n节点订阅链接：http://${server_ip}:${sub_port}/${lujing}\n"
 else 
     yellow "sing-box 尚未安装或未运行,请先安装或启动sing-box"
     sleep 1
@@ -1244,6 +1337,7 @@ while true; do
             else
                 fix_nginx
                 manage_packages install nginx jq tar iptables openssl coreutils
+		[ -n "$(curl -s --max-time 1 ipv6.ip.sb)" ] && manage_packages install ip6tables
                 install_singbox
 
                 if [ -x "$(command -v systemctl)" ]; then
@@ -1258,7 +1352,7 @@ while true; do
                     exit 1 
                 fi
 
-                sleep 4
+                sleep 5
                 get_info
                 add_nginx_conf
                 create_shortcut
